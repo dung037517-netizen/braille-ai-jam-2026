@@ -1,0 +1,18 @@
+[theme]
+base = "dark"
+primaryColor = "#38BDF8"
+backgroundColor = "#060912"
+secondaryBackgroundColor = "#0B1220"
+textColor = "#E8EEF9"
+font = "sans serif"
+
+[server]
+maxUploadSize = 20
+enableXsrfProtection = true
+
+[browser]
+gatherUsageStats = false
+
+[client]
+# Hides the "Deploy" / hamburger clutter so the screen recording stays clean.
+toolbarMode = "minimal"

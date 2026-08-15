@@ -1,0 +1,70 @@
+# ─── Python ───────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ─── Virtual environments ─────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# ─── Streamlit ────────────────────────────────────────────────────────────
+# Keep .streamlit/config.toml (it ships the theme) but never commit secrets.
+.streamlit/secrets.toml
+.streamlit/credentials.toml
+
+# ─── Testing / tooling caches ─────────────────────────────────────────────
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# ─── Notebooks ────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ─── Model weights & demo media (keep the repo light) ─────────────────────
+*.pt
+*.pth
+*.onnx
+*.tflite
+*.h5
+*.pkl
+models/
+data/raw/
+*.mp4
+*.mov
+
+# ─── Environment / secrets ────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ─── Editors & OS ─────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini

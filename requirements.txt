@@ -1,0 +1,11 @@
+# BrailleGuard AI — MVP dependencies
+# Python 3.10+  (uses PEP 604 `X | None` type syntax)
+
+streamlit>=1.41,<2.0
+pillow>=10.2
+numpy>=1.26
+
+# Not required by this MVP — the mock engine uses PIL + NumPy only, which keeps
+# the Streamlit Community Cloud build fast and avoids the extra system libs
+# OpenCV pulls in. Uncomment when you swap in the real model:
+# opencv-python-headless>=4.9
