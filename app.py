@@ -12,6 +12,12 @@ The inference engine in this build is a MOCK (see `MockBrailleInspector`).
 It is deterministic, so the same input always produces the same output —
 swap in a real model by replacing that one class.
 
+Every inspection ends in one of three verdicts:
+    PASS    the decoded braille matches the approved text and nothing is flagged
+    ERROR   a defect is found, or the braille reads as a different word
+    REVIEW  the photo is too poor to judge, or a signal sits just under the
+            decision threshold: no automatic pass, a person checks it
+
 Run:  streamlit run app.py
 """
 
@@ -27,14 +33,14 @@ from typing import Any
 
 import numpy as np
 import streamlit as st
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 0. APP CONSTANTS
 # ══════════════════════════════════════════════════════════════════════════════
 
 APP_NAME = "BrailleGuard AI"
-APP_VERSION = "0.9.0-mvp"
+APP_VERSION = "0.10.0-mvp"
 ENGINE_NAME = "BG-Net v0.9 (mock)"
 TAGLINE_EN = "Every dot checked before it reaches a fingertip."
 TAGLINE_VI = "Kiểm tra từng chấm nổi trước khi chạm tới đầu ngón tay."
@@ -155,8 +161,9 @@ STR: dict[str, dict[str, str]] = {
     # --- demo tab -------------------------------------------------------
     "demo_kicker": {"en": "LIVE AI DEMO", "vi": "DEMO AI TRỰC TIẾP"},
     "demo_head": {"en": "Point. Scan. Verdict in under a second.", "vi": "Chụp. Quét. Kết luận dưới một giây."},
-    "btn_pass": {"en": "▶  RUN DEMO — GOOD LABEL", "vi": "▶  CHẠY DEMO — NHÃN CHUẨN"},
-    "btn_fail": {"en": "▶  RUN DEMO — DEFECTIVE LABEL", "vi": "▶  CHẠY DEMO — NHÃN LỖI"},
+    "btn_pass": {"en": "▶  GOOD LABEL", "vi": "▶  NHÃN CHUẨN"},
+    "btn_fail": {"en": "▶  DEFECTIVE LABEL", "vi": "▶  NHÃN LỖI"},
+    "btn_blur": {"en": "▶  BLURRY PHOTO", "vi": "▶  ẢNH CHỤP MỜ"},
     "btn_auto": {"en": "🎬  AUTO-PITCH (30s)", "vi": "🎬  PITCH TỰ ĐỘNG 30S"},
     "upload_head": {"en": "Or inspect a real photo", "vi": "Hoặc kiểm tra ảnh thật"},
     "upload_label": {
@@ -175,6 +182,17 @@ STR: dict[str, dict[str, str]] = {
         "en": "Defects detected. Batch held — do not release to packaging.",
         "vi": "Phát hiện lỗi. Giữ lô hàng — không chuyển sang đóng gói.",
     },
+    "verdict_review": {"en": "HUMAN REVIEW", "vi": "CẦN NGƯỜI KIỂM TRA"},
+    "verdict_review_sub": {
+        "en": "Not enough evidence for an automatic decision. Not passed — routed to a human reviewer.",
+        "vi": "Không đủ căn cứ để tự động kết luận. Không thông qua — chuyển cho người kiểm tra.",
+    },
+    "review_head": {"en": "Why a person must check this", "vi": "Vì sao cần người kiểm tra"},
+    "review_note": {
+        "en": "The automatic pass is reserved for clear images and clear readings. Anything weaker is never cleared by the model.",
+        "vi": "Chỉ ảnh rõ và kết quả đọc rõ ràng mới được tự động thông qua. Mọi trường hợp yếu hơn đều không được mô hình cho qua.",
+    },
+    "not_decoded": {"en": "not decoded — image unusable", "vi": "không giải mã — ảnh không dùng được"},
     "findings_head": {"en": "Defect report", "vi": "Báo cáo lỗi"},
     "no_findings": {
         "en": "No defects above the current sensitivity threshold.",
@@ -191,6 +209,7 @@ STR: dict[str, dict[str, str]] = {
         "vi": "Nhấn một trong hai nút phía trên — hoặc thả ảnh của bạn vào — để bắt đầu kiểm tra.",
     },
     "stage_load": {"en": "Loading frame…", "vi": "Đang nạp khung hình…"},
+    "stage_quality": {"en": "Checking image quality…", "vi": "Đang kiểm tra chất lượng ảnh…"},
     "stage_norm": {"en": "Normalising illumination…", "vi": "Đang chuẩn hoá ánh sáng…"},
     "stage_grid": {"en": "Locating braille cell grid…", "vi": "Đang định vị lưới ô Braille…"},
     "stage_dots": {"en": "Measuring dot geometry…", "vi": "Đang đo hình học chấm nổi…"},
@@ -497,6 +516,8 @@ section[data-testid="stSidebar"] * {{ color: var(--text); }}
   animation: popin .45s cubic-bezier(.2,1.5,.4,1) both; }}
 .verdict-fail {{ background:var(--errbg); border-color:var(--err);
   animation: popin .45s cubic-bezier(.2,1.5,.4,1) both, shake .55s .35s ease-in-out; }}
+.verdict-review {{ background:rgba(251,191,36,.12); border-color:var(--warn);
+  animation: popin .45s cubic-bezier(.2,1.5,.4,1) both; }}
 @keyframes popin {{ from{{transform:scale(.9);opacity:0}} to{{transform:scale(1);opacity:1}} }}
 @keyframes shake {{ 0%,100%{{transform:translateX(0)}} 20%{{transform:translateX(-9px)}}
   40%{{transform:translateX(9px)}} 60%{{transform:translateX(-5px)}} 80%{{transform:translateX(5px)}} }}
@@ -504,11 +525,13 @@ section[data-testid="stSidebar"] * {{ color: var(--text); }}
 .verdict-word {{ font-size:2.9rem; font-weight:900; letter-spacing:-0.04em; line-height:1; }}
 .verdict-pass .verdict-word {{ color:var(--ok); }}
 .verdict-fail .verdict-word {{ color:var(--err); }}
+.verdict-review .verdict-word {{ color:var(--warn); }}
 .verdict-sub {{ font-size:1.05rem; color:var(--muted); margin-top:6px; }}
 .dotpulse {{ width:14px;height:14px;border-radius:50%;display:inline-block;
   margin-right:12px;vertical-align:middle; }}
 .dotpulse.ok {{ background:var(--ok); box-shadow:0 0 0 0 var(--ok); animation:ring 1.8s infinite; }}
 .dotpulse.err {{ background:var(--err); box-shadow:0 0 0 0 var(--err); animation:ring 1.1s infinite; }}
+.dotpulse.warn {{ background:var(--warn); box-shadow:0 0 0 0 var(--warn); animation:ring 1.4s infinite; }}
 @keyframes ring {{ to {{ box-shadow:0 0 0 18px transparent; }} }}
 
 /* ---------- findings ---------- */
@@ -910,9 +933,97 @@ BAD_DEFECTS: list[Defect] = [
 #  └──────────────────────────────────────────────────────────────────────┘
 
 
+# ── Image-quality gate ───────────────────────────────────────────────────────
+#
+# The automatic PASS is only allowed on an image good enough to judge. A blurry,
+# dark, washed-out or tiny photo is not cleared on a weak signal: it goes to a
+# human reviewer with the reasons, before any braille is decoded. The limits
+# were set on the generated demo labels (sharpness ~780 when clean, ~31 after a
+# 2 px blur); they are heuristics for this MVP, not calibrated limits.
+
+QUALITY_LIMITS: dict[str, float] = {
+    "min_side_px": 300,     # shortest side of the photo
+    "sharpness": 60.0,      # variance of the Laplacian, measured at 640 px width
+    "brightness": 50.0,     # mean grey level, 0-255
+    "contrast": 14.0,       # standard deviation of the grey levels
+    "clipped": 0.25,        # largest share of pure-white or pure-black pixels
+}
+
+# A candidate defect this close under the decision threshold is too strong to
+# ignore and too weak to call. It goes to a person instead of being dropped.
+REVIEW_BAND = 0.15
+
+
+@dataclass
+class QualityReport:
+    min_side: int
+    sharpness: float
+    brightness: float
+    contrast: float
+    clipped: float
+    reasons: list[tuple[str, str]] = field(default_factory=list)   # (en, vi)
+
+    @property
+    def ok(self) -> bool:
+        return not self.reasons
+
+
+def assess_quality(img: Image.Image) -> QualityReport:
+    """Measure whether a photo is good enough for an automatic decision."""
+    W, H = img.size
+    work_w = 640
+    work_h = max(3, int(H * work_w / max(1, W)))
+    g = np.asarray(img.convert("L").resize((work_w, work_h)), dtype=np.float32)
+    lap = 4 * g[1:-1, 1:-1] - g[:-2, 1:-1] - g[2:, 1:-1] - g[1:-1, :-2] - g[1:-1, 2:]
+    q = QualityReport(
+        min_side=min(W, H),
+        sharpness=float(lap.var()),
+        brightness=float(g.mean()),
+        contrast=float(g.std()),
+        clipped=float(((g <= 5) | (g >= 250)).mean()),
+    )
+    lim = QUALITY_LIMITS
+    if q.min_side < lim["min_side_px"]:
+        q.reasons.append((
+            f"Image too small: the shortest side is {q.min_side} px; at least {lim['min_side_px']:.0f} px is needed.",
+            f"Ảnh quá nhỏ: cạnh ngắn nhất {q.min_side} px; cần tối thiểu {lim['min_side_px']:.0f} px.",
+        ))
+    if q.sharpness < lim["sharpness"]:
+        q.reasons.append((
+            f"Out of focus: sharpness {q.sharpness:.0f}, below the minimum of {lim['sharpness']:.0f}.",
+            f"Ảnh bị mờ: độ nét {q.sharpness:.0f}, dưới mức tối thiểu {lim['sharpness']:.0f}.",
+        ))
+    if q.brightness < lim["brightness"]:
+        q.reasons.append((
+            f"Too dark: mean brightness {q.brightness:.0f} of 255, below {lim['brightness']:.0f}.",
+            f"Ảnh quá tối: độ sáng trung bình {q.brightness:.0f}/255, dưới {lim['brightness']:.0f}.",
+        ))
+    if q.contrast < lim["contrast"]:
+        q.reasons.append((
+            f"Too little contrast to resolve the dots: {q.contrast:.0f}, below {lim['contrast']:.0f}.",
+            f"Độ tương phản quá thấp để phân biệt chấm nổi: {q.contrast:.0f}, dưới {lim['contrast']:.0f}.",
+        ))
+    if q.clipped > lim["clipped"]:
+        q.reasons.append((
+            f"Glare or deep shadow: {q.clipped:.0%} of pixels are pure white or black (limit {lim['clipped']:.0%}).",
+            f"Loá sáng hoặc bóng tối: {q.clipped:.0%} điểm ảnh trắng hoặc đen hoàn toàn (giới hạn {lim['clipped']:.0%}).",
+        ))
+    return q
+
+
+def degrade_capture(img: Image.Image) -> Image.Image:
+    """A poor handheld shot of a good label: out of focus and underexposed."""
+    return ImageEnhance.Brightness(img.filter(ImageFilter.GaussianBlur(4))).enhance(0.35)
+
+
+def near_miss(conf: float, threshold: float) -> bool:
+    """True for a score just under the threshold: not a defect, not clear."""
+    return threshold - REVIEW_BAND <= conf < threshold
+
+
 @dataclass
 class Inspection:
-    verdict: str                     # "PASS" | "ERROR"
+    verdict: str                     # "PASS" | "ERROR" | "REVIEW"
     findings: list[Finding]
     cells_scanned: int
     latency_ms: float
@@ -920,6 +1031,16 @@ class Inspection:
     decoded: str = ""
     source: str = "demo"             # "demo" | "upload"
     meta: dict[str, Any] = field(default_factory=dict)
+    # Why no automatic decision was made, as (English, Vietnamese) pairs.
+    review: list[tuple[str, str]] = field(default_factory=list)
+    quality: QualityReport | None = None
+
+
+def decide(findings: list[Finding], mismatch: bool, review: list[tuple[str, str]]) -> str:
+    """A defect or a misread word fails the label; doubt sends it to a person."""
+    if findings or mismatch:
+        return "ERROR"
+    return "REVIEW" if review else "PASS"
 
 
 class MockBrailleInspector:
@@ -937,18 +1058,52 @@ class MockBrailleInspector:
     version = ENGINE_NAME
 
     # ------------------------------------------------------------------ #
+    def quality_hold(
+        self, img: Image.Image, source: str, t0: float, reference: str = ""
+    ) -> Inspection | None:
+        """A REVIEW verdict, without decoding, when the photo is too poor to judge."""
+        quality = assess_quality(img)
+        if quality.ok:
+            return None
+        return Inspection(
+            verdict="REVIEW",
+            findings=[],
+            cells_scanned=0,
+            latency_ms=(time.perf_counter() - t0) * 1000,
+            reference=reference.upper(),
+            source=source,
+            review=list(quality.reasons),
+            quality=quality,
+        )
+
+    # ------------------------------------------------------------------ #
     def predict_scripted(
-        self, cells: list[Cell], defects: list[Defect], reference: str, threshold: float
+        self,
+        cells: list[Cell],
+        defects: list[Defect],
+        reference: str,
+        threshold: float,
+        image: Image.Image | None = None,
     ) -> Inspection:
         t0 = time.perf_counter()
+        if image is not None:
+            held = self.quality_hold(image, "demo", t0, reference)
+            if held is not None:
+                return held
         rng = random.Random(len(defects) * 97 + len(cells))
         findings: list[Finding] = []
+        review: list[tuple[str, str]] = []
         base_conf = {"critical": 0.975, "major": 0.928, "minor": 0.861}
 
         for df in defects:
             sev, icon = DEFECT_META[df.kind]
             conf = min(0.998, base_conf[sev] + rng.uniform(-0.018, 0.018))
             if conf < threshold:
+                if near_miss(conf, threshold):
+                    review.append((
+                        f"Cell {df.cell + 1}: possible {df.kind} at {conf:.0%}, just under the {threshold:.0%} decision threshold.",
+                        f"Ô {df.cell + 1}: có thể là {df.kind} với {conf:.0%}, ngay dưới ngưỡng quyết định {threshold:.0%}.",
+                    ))
                 continue
             findings.append(
                 Finding(
@@ -965,18 +1120,21 @@ class MockBrailleInspector:
             )
 
         # Decode straight from the dots that actually got embossed: a missing
-        # dot changes the character, a flat dot or a pitch error does not.
+        # dot changes the character, a flat dot or a pitch error does not. The
+        # decoder is never shown the reference, so it cannot read what it
+        # expects; the comparison happens only afterwards.
         decoded = "".join(REVERSE_BRAILLE.get(c.dots, "?") for c in cells).upper()
         latency = (time.perf_counter() - t0) * 1000 + rng.uniform(180, 320)
         mismatch = decoded != reference.upper()
         return Inspection(
-            verdict="ERROR" if (findings or mismatch) else "PASS",
+            verdict=decide(findings, mismatch, review),
             findings=findings,
             cells_scanned=len(cells),
             latency_ms=latency,
             reference=reference.upper(),
             decoded=decoded,
             source="demo",
+            review=review,
         )
 
     # ------------------------------------------------------------------ #
@@ -989,6 +1147,9 @@ class MockBrailleInspector:
         deterministically for the same input.
         """
         t0 = time.perf_counter()
+        held = self.quality_hold(img, "upload", t0)
+        if held is not None:
+            return held
         W, H = img.size
         work_w = 640
         work_h = max(1, int(H * work_w / W))
@@ -997,8 +1158,12 @@ class MockBrailleInspector:
         bs = 32
         rows, cols = work_h // bs, work_w // bs
         if rows < 2 or cols < 2:
-            return Inspection("PASS", [], 0, (time.perf_counter() - t0) * 1000,
-                              source="upload")
+            # Too little of the label to analyse is not evidence that it is fine.
+            return Inspection("REVIEW", [], 0, (time.perf_counter() - t0) * 1000,
+                              source="upload", review=[(
+                                  "The frame is too narrow to analyse; photograph the whole braille line.",
+                                  "Khung ảnh quá hẹp để phân tích; hãy chụp trọn dòng chữ nổi.",
+                              )])
 
         blocks = g[: rows * bs, : cols * bs].reshape(rows, bs, cols, bs)
         std = blocks.std(axis=(1, 3))
@@ -1041,8 +1206,14 @@ class MockBrailleInspector:
         scored.sort(reverse=True, key=lambda x: x[0])
 
         findings: list[Finding] = []
+        review: list[tuple[str, str]] = []
         for conf, box, area in scored[:4]:
             if conf < threshold:
+                if near_miss(conf, threshold):
+                    review.append((
+                        f"A contrast anomaly scored {conf:.0%}, just under the {threshold:.0%} decision threshold.",
+                        f"Một bất thường tương phản đạt {conf:.0%}, ngay dưới ngưỡng quyết định {threshold:.0%}.",
+                    ))
                 continue
             sev, icon = DEFECT_META["SURFACE_ANOMALY"]
             findings.append(
@@ -1061,11 +1232,12 @@ class MockBrailleInspector:
 
         latency = (time.perf_counter() - t0) * 1000
         return Inspection(
-            verdict="ERROR" if findings else "PASS",
+            verdict=decide(findings, False, review),
             findings=findings,
             cells_scanned=rows * cols,
             latency_ms=latency,
             source="upload",
+            review=review,
         )
 
 
@@ -1164,7 +1336,7 @@ def annotate(
 
     # 3. viewfinder brackets (under the HUD bar, hence drawn before it) -----
     ok = insp.verdict == "PASS"
-    hud_col = GREEN if ok else RED
+    hud_col = {"PASS": GREEN, "REVIEW": AMBER}.get(insp.verdict, RED)
     _brackets(d, (14, 14, W - 15, H - 15), CYAN + (140,), width=3, arm=int(30 * scale))
 
     # 4. HUD ----------------------------------------------------------------
@@ -1179,7 +1351,10 @@ def annotate(
     ty = top + int(10 * scale)
     left = f"{ENGINE_NAME}   ·   {insp.cells_scanned} cells   ·   {insp.latency_ms:.0f} ms"
     d.text((pad, ty), left, font=f_hud, fill=(226, 234, 246))
-    right = "✓ ALL CELLS VERIFIED" if ok else f"✕ {len(insp.findings)} DEFECT(S)"
+    if insp.verdict == "REVIEW":
+        right = "⚠ SENT TO HUMAN REVIEW"
+    else:
+        right = "✓ ALL CELLS VERIFIED" if ok else f"✕ {len(insp.findings)} DEFECT(S)"
     rw = d.textlength(right, font=f_hud)
     d.text((W - rw - pad, ty), right, font=f_hud, fill=hud_col + (255,))
 
@@ -1242,18 +1417,23 @@ def _defects_from(raw: list[dict]) -> list[Defect]:
 
 
 def run_scripted(kind: str) -> None:
-    data = build_demo(kind)
+    """Run a scripted demo: "good", "bad", or "blurry" (the good label, badly shot)."""
+    data = build_demo("good" if kind == "blurry" else kind)
     cells = _cells_from(data["cells"])
     defects = _defects_from(data["defects"])
     threshold = threshold_from_sensitivity(st.session_state.sensitivity)
-    insp = INSPECTOR.predict_scripted(cells, defects, data["reference"], threshold)
     base = from_png(data["png"])
-    annotated = annotate(base, insp, cells)
+    if kind == "blurry":
+        base = degrade_capture(base)
+    insp = INSPECTOR.predict_scripted(cells, defects, data["reference"], threshold, image=base)
+    # Cells are only outlined as verified when the label was actually verified.
+    annotated = annotate(base, insp, None if insp.verdict == "REVIEW" else cells)
     st.session_state.result = {
-        "original": data["png"],
+        "original": to_png(base),
         "annotated": to_png(annotated),
         "insp": insp,
-        "title": "PARACETAMOL 500 mg · carton face",
+        "title": "PARACETAMOL 500 mg · carton face"
+        + (" · handheld shot, out of focus" if kind == "blurry" else ""),
     }
     st.session_state.celebrate = insp.verdict == "PASS"
 
@@ -1276,7 +1456,7 @@ def run_upload(file) -> None:
 
 def pipeline_animation(slot) -> None:
     """The visible 'AI is thinking' sequence — the money shot of the video."""
-    stages = ["stage_load", "stage_norm", "stage_grid", "stage_dots", "stage_dec", "stage_cmp"]
+    stages = ["stage_load", "stage_quality", "stage_norm", "stage_grid", "stage_dots", "stage_dec", "stage_cmp"]
     with slot.container():
         bar = st.progress(0)
         cap = st.empty()
@@ -1347,21 +1527,43 @@ def kpi(label: str, value: str, desc: str) -> None:
     )
 
 
+VERDICT_STYLE: dict[str, tuple[str, str, str, str, str]] = {
+    # verdict: (css class, icon, pulse, word key, subtitle key)
+    "PASS": ("verdict-pass", "✅", "ok", "verdict_pass", "verdict_pass_sub"),
+    "ERROR": ("verdict-fail", "🛑", "err", "verdict_fail", "verdict_fail_sub"),
+    "REVIEW": ("verdict-review", "🔍", "warn", "verdict_review", "verdict_review_sub"),
+}
+
+
 def verdict_badge(insp: Inspection) -> None:
-    ok = insp.verdict == "PASS"
+    cls, icon, pulse, word, sub = VERDICT_STYLE.get(insp.verdict, VERDICT_STYLE["ERROR"])
     st.markdown(
         f"""
-<div class="verdict {'verdict-pass' if ok else 'verdict-fail'}">
-  <div class="verdict-icon">{'✅' if ok else '🛑'}</div>
+<div class="verdict {cls}">
+  <div class="verdict-icon">{icon}</div>
   <div>
     <div class="verdict-word">
-      <span class="dotpulse {'ok' if ok else 'err'}"></span>
-      {t('verdict_pass') if ok else t('verdict_fail')}
+      <span class="dotpulse {pulse}"></span>
+      {t(word)}
     </div>
-    <div class="verdict-sub">{t('verdict_pass_sub') if ok else t('verdict_fail_sub')}</div>
+    <div class="verdict-sub">{t(sub)}</div>
   </div>
 </div>
 """,
+        unsafe_allow_html=True,
+    )
+
+
+def review_panel(insp: Inspection) -> None:
+    """The reasons no automatic decision was made."""
+    if not insp.review:
+        return
+    lang = st.session_state.get("lang", "en")
+    items = "".join(f"<li>{vi if lang == 'vi' else en}</li>" for en, vi in insp.review)
+    st.markdown(
+        f"<div class='note'><div class='note-t'>⚠ {t('review_head')}</div>"
+        f"<ul class='note-b' style='margin:6px 0 8px 18px'>{items}</ul>"
+        f"<div class='note-b'>{t('review_note')}</div></div>",
         unsafe_allow_html=True,
     )
 
@@ -1404,6 +1606,7 @@ def render_result(slot_id: str = "main") -> None:
 
     insp: Inspection = res["insp"]
     verdict_badge(insp)
+    review_panel(insp)
 
     if st.session_state.pop("celebrate", False):
         st.balloons()
@@ -1424,14 +1627,18 @@ def render_result(slot_id: str = "main") -> None:
     with m2:
         kpi(t("m_cells"), f"{insp.cells_scanned}", "100% coverage")
     with m3:
-        kpi(t("m_defects"), f"{len(insp.findings)}", insp.verdict)
+        kpi(t("m_defects"), "—" if insp.quality is not None else f"{len(insp.findings)}", insp.verdict)
     with m4:
         kpi(t("m_conf"), f"{top_conf * 100:.1f}%" if top_conf else "—", "detector score")
 
     if insp.source == "demo" and insp.reference:
         st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
-        shown = insp.decoded or insp.reference
-        colour = "var(--err)" if shown != insp.reference else "var(--ok)"
+        if insp.decoded:
+            shown = insp.decoded
+            colour = "var(--err)" if shown != insp.reference else "var(--ok)"
+        else:
+            shown = t("not_decoded")
+            colour = "var(--warn)"
         st.markdown(
             f"""
 <div class="panel">
@@ -1452,8 +1659,10 @@ def render_result(slot_id: str = "main") -> None:
         for f in sorted(insp.findings,
                         key=lambda x: {"critical": 0, "major": 1, "minor": 2}[x.severity]):
             finding_row(f)
-    else:
+    elif insp.verdict == "PASS":
         st.success(t("no_findings"), icon="✅")
+    else:
+        st.info(t("review_note"), icon="🔍")
 
     if insp.source == "upload":
         st.caption(t("upload_note"))
@@ -1583,16 +1792,19 @@ def tab_demo() -> None:
     section_head(t("demo_kicker"), t("demo_head"))
     st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
 
-    b1, b2, b3 = st.columns([1, 1, 0.8], gap="large")
-    clicked_good = clicked_bad = clicked_auto = False
+    b1, b2, b3 = st.columns(3, gap="large")
+    clicked_good = clicked_bad = clicked_blur = clicked_auto = False
     with b1:
         clicked_good = wide_button(t("btn_pass"), type="primary", key="btn_good")
     with b2:
         clicked_bad = wide_button(t("btn_fail"), key="btn_bad")
     with b3:
-        clicked_auto = wide_button(t("btn_auto"), key="btn_auto")
+        clicked_blur = wide_button(t("btn_blur"), key="btn_blur")
 
-    with st.expander("📎  " + t("upload_head"), expanded=False):
+    u1, u2 = st.columns([3, 1], gap="large")
+    with u2:
+        clicked_auto = wide_button(t("btn_auto"), key="btn_auto")
+    with u1, st.expander("📎  " + t("upload_head"), expanded=False):
         up = st.file_uploader(t("upload_label"), type=["png", "jpg", "jpeg", "webp", "bmp"],
                               key="uploader", label_visibility="visible")
         if up is not None:
@@ -1610,12 +1822,15 @@ def tab_demo() -> None:
         auto_pitch()
         st.rerun()
 
-    if clicked_good or clicked_bad:
+    if clicked_good or clicked_bad or clicked_blur:
         slot = st.empty()
         pipeline_animation(slot)
-        run_scripted("good" if clicked_good else "bad")
-        if clicked_bad:
+        kind = "good" if clicked_good else "bad" if clicked_bad else "blurry"
+        run_scripted(kind)
+        if kind == "bad":
             st.toast("🛑 Defective label — batch held", icon="🛑")
+        elif kind == "blurry":
+            st.toast("Photo too poor to judge — sent to a human reviewer", icon="🔍")
         else:
             st.toast("✅ Label verified — batch cleared", icon="✅")
 
